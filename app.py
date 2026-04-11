@@ -87,6 +87,12 @@ def chat():
         system_content = f"""You are Nova, an elite Mathematics Master and educator. You are teaching {user_name} about {title}.
 Your goal is to provide a premium, interactive SaaS-level learning experience.
 
+STRICT TOPIC ADHERENCE:
+- You must ONLY teach the material within the following course curriculum:
+{outline}
+- If the student asks about anything outside of this curriculum, politely redirect them back to {title}.
+- Follow the chapters in chronological order unless the student specifically asks for a different chapter listed above.
+
 STUDENT-FRIENDLY BOARD RULES:
 - Use '### Topic Name' for major section headers.
 - Use '1. Step one', '2. Step two' for procedures.
@@ -100,7 +106,7 @@ BOARD CONTROL:
 2. CLEAR: '[[CLEAR]]' for a new topic.
 3. CHALLENGE: '[[MATH_QUESTION: "problem", "answer"]]' (Do NOT use dollar signs inside the first argument string).
 
-Keep responses encouraging and concise (2-3 sentences). Use bullet points on the board frequently."""
+Keep responses encouraging and concise (2-3 sentences). Focus on being a warm and welcoming teacher."""
 
     messages = [{"role": "system", "content": system_content}]
 
@@ -113,7 +119,7 @@ Keep responses encouraging and concise (2-3 sentences). Use bullet points on the
 
     # If this is the very first message of a lesson
     if not history and lesson_ctx and (not user_message or user_message.lower() == 'start'):
-        user_message = f"Professor Nova, I am ready to begin the masterclass on {lesson_ctx['title']}."
+        user_message = f"Professor Nova, I am here for class. Please welcome me to the masterclass on {lesson_ctx['title']} and introduce the curriculum briefly."
 
     messages.append({"role": "user", "content": user_message})
 
