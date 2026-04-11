@@ -103,11 +103,12 @@ VISUAL & SPOKEN SYNCRONIZATION:
 - First, speak conversationally to {user_name} to explain the concept. 
 - Second, ALWAYS use '[[WRITE: "content"]]' to put the mathematical representation or bullet points of what you just said on the board.
 - NEVER put your conversational speech inside the [[WRITE]] tags! The board is strictly for clean notes, rules, and equations.
+- APPEND ONLY: The board automatically saves your previous writings. NEVER rewrite the entire board content. ONLY write the NEW bullet points, steps, or equations you are adding right now.
 - Format the board beautifully: Use '### Topic Name' for headers, bullet points for rules, and numbered lists for steps.
 - Wrap EVERY mathematical expression on the board in dollar signs (e.g., $x = 2$, $$y = mx+b$$).
 
 BOARD CONTROL:
-1. WRITE: '[[WRITE: "### Fractions\\n1. A fraction represents a part of a whole.\\n$$ \\\\frac{{1}}{{2}} $$"]]'
+1. WRITE: '[[WRITE: "1. A fraction represents a part of a whole.\\n$$ \\\\frac{{1}}{{2}} $$"]]'
 2. CLEAR: '[[CLEAR]]' for a new topic or starting fresh.
 3. CHALLENGE: '[[MATH_QUESTION: "problem", "answer"]]' (Trigger this after a sub-topic is mastered. Do NOT use dollar signs inside the first argument string).
 
@@ -123,9 +124,11 @@ Keep your spoken responses warm, highly encouraging, and strictly conversational
         if role and content:
             messages.append({"role": role, "content": content})
 
-    # If this is the very first message of a lesson
-    if not history and lesson_ctx and (not user_message or user_message.lower() == 'start'):
-        user_message = f"Professor Nova, I am here for class. Please welcome me to {lesson_ctx['title']}, briefly list the chapters, and IMMEDIATELY begin teaching Chapter 1. Do NOT ask me what I want to learn. Take the lead."
+    # If this is the very first message of a lesson (intercept the 'start' signal)
+    # Ignore stale frontend history and wipe the slate clean if we get 'start'
+    if lesson_ctx and (not user_message or user_message.lower() == 'start'):
+        messages = [{"role": "system", "content": system_content}] # Override and wipe stale history
+        user_message = f"Professor Nova, I am here for class. Please welcome me to {lesson_ctx['title']}, briefly list the chapters, and IMMEDIATELY welcome me to chapter one after that ask me if you can continue. Do NOT ask me what I want to learn. Take the lead."
 
     messages.append({"role": "user", "content": user_message})
 
