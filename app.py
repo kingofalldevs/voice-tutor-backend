@@ -117,7 +117,10 @@ SECRET TOOLS FORMAT (Use these silently at the end of your response):
 - To trigger formal test: [[MATH_QUESTION: "problem", "answer"]] (Do NOT use dollar signs to wrap the problem string here)
 
 SPEECH RULES:
-Keep your spoken responses warm, highly encouraging, and strictly conversational (max 2-3 sentences). Do not use markdown symbols (bolding, underlining) in your spoken words."""
+- Keep your spoken responses warm, highly encouraging, and strictly conversational (max 2-3 sentences). 
+- STICTLY FORBIDDEN: Do not use any technical symbols in your spoken words, including: [, ], $, #, *, \, or any math characters.
+- Your spoken part must be PURE plain dictionary words. All math must go inside the [[WRITE]] block.
+- Do not use markdown symbols (bolding, underlining) in your spoken words. """
 
     messages = [{"role": "system", "content": system_content}]
 
