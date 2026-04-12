@@ -6,20 +6,37 @@ from dotenv import load_dotenv
 import firebase_admin
 from firebase_admin import credentials, firestore
 
+import json
+
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
 # Initialize Firebase Admin
-cred_path = 'serviceAccount.json'
-if os.path.exists(cred_path):
-    cred = credentials.Certificate(cred_path)
-    firebase_admin.initialize_app(cred)
-    db = firestore.client()
-else:
-    db = None
-    print(f"Warning: {cred_path} not found. Lesson endpoints will fail.")
+def init_firebase():
+    # Try environment variable first (for Render/Production)
+    fb_service_account = os.getenv("FIREBASE_SERVICE_ACCOUNT")
+    if fb_service_account:
+        try:
+            cred_dict = json.loads(fb_service_account)
+            cred = credentials.Certificate(cred_dict)
+            firebase_admin.initialize_app(cred)
+            return firestore.client()
+        except Exception as e:
+            print(f"Error initializing Firebase from env: {e}")
+    
+    # Fallback to local file
+    cred_path = 'serviceAccount.json'
+    if os.path.exists(cred_path):
+        cred = credentials.Certificate(cred_path)
+        firebase_admin.initialize_app(cred)
+        return firestore.client()
+    
+    print(f"Warning: Firebase not configured. Lesson endpoints will fail.")
+    return None
+
+db = init_firebase()
 
 # Initialize Groq
 groq_api_key = os.getenv("GROQ_API_KEY")
@@ -247,4 +264,5 @@ def health():
     return jsonify({"status": "ok", "db_connected": db is not None})
 
 if __name__ == "__main__":
-    app.run(port=5050, debug=True, threaded=True)
+    port = int(os.environ.get("PORT", 5050))
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

@@ -26,7 +26,7 @@ ENV/
 .env
 test_groq.py
 serviceAccount.json
-seed_lessons.py
+
 
 # OS files
 .DS_Store
