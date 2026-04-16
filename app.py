@@ -79,6 +79,69 @@ def onboarding():
     
     return jsonify({"status": "success", "profile": response_data})
 
+@app.route("/curriculum/all", methods=["GET"])
+def get_all_curriculum():
+    if not db:
+        return jsonify({"error": "Firebase not configured"}), 500
+    try:
+        all_data = {
+            "Elementary School": [],
+            "Middle School": [],
+            "High School": []
+        }
+        
+        # Scrape all learning paths
+        paths_ref = db.collection('learning_paths').stream()
+        for p_doc in paths_ref:
+            path_id = p_doc.id # e.g. "us_grade_6"
+            
+            # Categorization logic
+            category = "Elementary School"
+            if "_grade_" in path_id:
+                grade_str = path_id.split("_grade_")[-1]
+                if grade_str.lower() == 'k':
+                    category = "Elementary School"
+                elif grade_str.isdigit():
+                    g = int(grade_str)
+                    if 6 <= g <= 8: category = "Middle School"
+                    elif g >= 9: category = "High School"
+
+            # Fetch standards for this path
+            domains_ref = p_doc.reference.collection('domains').stream()
+            for d_doc in domains_ref:
+                domain_name = d_doc.id
+                clusters_ref = d_doc.reference.collection('clusters').stream()
+                for c_doc in clusters_ref:
+                    cluster_name = c_doc.id
+                    stds_ref = c_doc.reference.collection('standards').stream()
+                    for s_doc in stds_ref:
+                        s_data = s_doc.to_dict()
+                        # Fetch skills (minimal for list view)
+                        skills_ref = s_doc.reference.collection('skills').stream()
+                        skills_list = []
+                        for sk_doc in skills_ref:
+                            sk_data = sk_doc.to_dict()
+                            skills_list.append({
+                                "id": sk_doc.id,
+                                "title": sk_data.get("title")
+                            })
+                        
+                        all_data[category].append({
+                            "id": f"{path_id}:{s_doc.id}", # Composite ID for selection
+                            "path_id": path_id,
+                            "domain": domain_name,
+                            "cluster": cluster_name,
+                            "title": s_data.get("title"),
+                            "description": s_data.get("description"),
+                            "skills": skills_list,
+                            "grade": path_id.split("_")[-1].upper()
+                        })
+
+        return jsonify(all_data)
+    except Exception as e:
+        print(f"ERROR in get_all_curriculum: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/curriculum/<path_id>", methods=["GET"])
 def get_curriculum(path_id):
     if not db:
