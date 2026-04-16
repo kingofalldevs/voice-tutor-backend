@@ -71,7 +71,7 @@ lessons = [
         "chapters": [
             {"id": 1, "title": "Length, Mass, and Capacity", "summary": "Measure using meters, kilograms, and liters."},
             {"id": 2, "title": "Time", "summary": "Tell time and calculate durations."},
-            {"id": 3, "title": "Money", "summary": "Solve problems using Ghana cedis and making change."}
+            {"id": 3, "title": "Money", "summary": "Solve problems using standard currency and making change."}
         ]
     },
     {

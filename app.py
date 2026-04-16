@@ -46,8 +46,95 @@ def build_system_prompt(user_name: str) -> str:
     return f"""You are Nova, a warm and encouraging AI tutor talking to {user_name}.
 Keep responses short (1-3 sentences). Be conversational. No markdown or emojis."""
 
+@app.route("/onboarding", methods=["POST"])
+def onboarding():
+    if not db:
+        return jsonify({"error": "Firebase not configured"}), 500
+    data = request.json
+    uid = data.get("uid")
+    if not uid:
+        return jsonify({"error": "Missing uid"}), 400
+    
+    # Map country/grade to path_id
+    country = data.get("country", "US")
+    grade = data.get("grade", 6)
+    path_id = f"{country.lower()}_grade_{grade}"
+    
+    user_data = {
+        "name": data.get("name"),
+        "age": data.get("age"),
+        "country": country,
+        "state": data.get("state"),
+        "grade": grade,
+        "learning_path_id": path_id,
+        "updatedAt": firestore.SERVER_TIMESTAMP
+    }
+    
+    db.collection('users').document(uid).set(user_data, merge=True)
+    
+    # Remove SERVER_TIMESTAMP before returning JSON (it's not serializable)
+    response_data = {**user_data}
+    response_data.pop('updatedAt', None)
+    response_data['uid'] = uid
+    
+    return jsonify({"status": "success", "profile": response_data})
+
+@app.route("/curriculum/<path_id>", methods=["GET"])
+def get_curriculum(path_id):
+    if not db:
+        return jsonify({"error": "Firebase not configured"}), 500
+    try:
+        # Fetch all standards for this path
+        # Note: Hierarchy is learning_paths/{id}/domains/{d}/clusters/{c}/standards/{s}
+        # For simplicity, we can fetch all standards under this path across all domains
+        standards = []
+        print(f"DEBUG: Fetching curriculum for path_id={path_id}")
+        domains_ref = db.collection('learning_paths').document(path_id).collection('domains').stream()
+        
+        found_any = False
+        for d_doc in domains_ref:
+            domain_name = d_doc.id
+            found_any = True
+            print(f"  Found Domain: {domain_name}")
+            clusters_ref = d_doc.reference.collection('clusters').stream()
+            for c_doc in clusters_ref:
+                cluster_name = c_doc.id
+                print(f"    Found Cluster: {cluster_name}")
+                stds_ref = c_doc.reference.collection('standards').stream()
+                for s_doc in stds_ref:
+                    s_data = s_doc.to_dict()
+                    print(f"      Found Standard: {s_doc.id}")
+                    # Fetch skills
+                    skills_ref = s_doc.reference.collection('skills').stream()
+                    skills_list = []
+                    for sk_doc in skills_ref:
+                        sk_data = sk_doc.to_dict()
+                        skills_list.append({
+                            "id": sk_doc.id,
+                            "title": sk_data.get("title"),
+                            "difficulty": sk_data.get("difficulty")
+                        })
+                    
+                    standards.append({
+                        "id": s_doc.id,
+                        "domain": domain_name,
+                        "cluster": cluster_name,
+                        "title": s_data.get("title"),
+                        "description": s_data.get("description"),
+                        "skills": skills_list
+                    })
+        
+        if not found_any:
+            print(f"  WARNING: No domains found for {path_id}")
+        print(f"DEBUG: Returning {len(standards)} standards for {path_id}")
+        
+        return jsonify(standards)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/lessons", methods=["GET"])
 def get_lessons():
+    # Deprecated in favor of curriculum, but keeping for compatibility during migration
     if not db:
         return jsonify({"error": "Firebase not configured"}), 500
     try:
@@ -55,7 +142,6 @@ def get_lessons():
         lessons = []
         for doc in lessons_ref:
             d = doc.to_dict()
-            # Only return lightweight metadata
             lessons.append({
                 "id": doc.id,
                 "title": d.get("title"),
@@ -73,10 +159,39 @@ def get_lesson_detail(lesson_id):
     if not db:
         return jsonify({"error": "Firebase not configured"}), 500
     try:
+        # Check standard format first
+        # Format: path:domain:cluster:standard
+        if ":" in lesson_id:
+            parts = lesson_id.split(":")
+            if len(parts) == 4:
+                path, dom, clus, std = parts
+                doc = db.collection('learning_paths').document(path) \
+                        .collection('domains').document(dom) \
+                        .collection('clusters').document(clus) \
+                        .collection('standards').document(std).get()
+                if doc.exists:
+                    std_data = doc.to_dict()
+                    # Fetch skills
+                    skills_ref = doc.reference.collection('skills').stream()
+                    std_data['skills'] = [s.to_dict() for s in skills_ref]
+                    return jsonify(std_data)
+
+        # Fallback to old lessons
         doc = db.collection('lessons').document(lesson_id).get()
         if doc.exists:
             return jsonify(doc.to_dict())
         return jsonify({"error": "Lesson not found"}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/progress/<uid>", methods=["GET"])
+def get_progress(uid):
+    if not db:
+        return jsonify({"error": "Firebase not configured"}), 500
+    try:
+        skills_ref = db.collection('user_progress').document(uid).collection('skills').stream()
+        progress = {s.id: s.to_dict() for s in skills_ref}
+        return jsonify(progress)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -86,158 +201,176 @@ def chat():
         return jsonify({"error": "GROQ_API_KEY is not set"}), 500
 
     data = request.json
+    uid = data.get("uid")
     user_message = data.get("message", "")
     history = data.get("history", [])
     user_name = data.get("userName", "Student")
-    lesson_ctx = data.get("lessonContext")
+    
+    # Curriculum Context
+    lesson_ctx = data.get("lessonContext", {}) 
+    current_skill_id = data.get("currentSkillId") or lesson_ctx.get("currentSkillId")
+    
+    # Ensure currentSkillId is extracted if sent inside lessonContext
+    if not current_skill_id and lesson_ctx:
+        current_skill_id = lesson_ctx.get("currentSkillId")
+    
+    # 1. Fetch User Profile
+    user_profile = {}
+    if uid and db:
+        u_doc = db.collection('users').document(uid).get()
+        if u_doc.exists:
+            user_profile = u_doc.to_dict()
 
-    # Base prompt
-    system_content = build_system_prompt(user_name)
+    # 2. Fetch/Init Mastery
+    mastery = 0.0
+    attempts = 0
+    if uid and current_skill_id and db:
+        prog_doc = db.collection('user_progress').document(uid).collection('skills').document(current_skill_id).get()
+        if prog_doc.exists:
+            p_data = prog_doc.to_dict()
+            mastery = p_data.get("mastery", 0.0)
+            attempts = p_data.get("attempts", 0)
 
-    # Inject Elite Socratic Teacher Guide
-    # Inject Ghanaian Math Master Guide
-    if lesson_ctx:
-        title = lesson_ctx.get("title")
-        chapters = lesson_ctx.get("chapters", [])
-        outline = "\n".join([f"Ch {c['id']}: {c['title']} - {c['summary']}" for c in chapters])
+    # 3. Answer Evaluation
+    evaluation_result = None
+    if len(history) >= 1 and user_message and user_message.lower() != 'start':
+        try:
+            eval_prompt = f"""Evaluate student's math answer.
+Context: Teaching {lesson_ctx.get('title') if lesson_ctx else 'Math'}
+Student Answer: "{user_message}"
+Previous AI Message: "{history[-1].get('content') if history else ''}"
+
+Return ONLY valid JSON:
+{{
+  "is_correct": boolean,
+  "feedback_type": "reinforce" | "correct" | "hint",
+  "mastery_delta": float (-0.1 to 0.2)
+}}
+"""
+            eval_resp = client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[{"role": "system", "content": eval_prompt}],
+                response_format={"type": "json_object"}
+            )
+            evaluation_result = json.loads(eval_resp.choices[0].message.content)
+            
+            if uid and current_skill_id and db:
+                new_mastery = max(0, min(1.0, mastery + evaluation_result.get("mastery_delta", 0)))
+                db.collection('user_progress').document(uid).collection('skills').document(current_skill_id).set({
+                    "mastery": new_mastery,
+                    "attempts": attempts + 1,
+                    "last_updated": firestore.SERVER_TIMESTAMP
+                }, merge=True)
+                mastery = new_mastery
+        except Exception as e:
+            print(f"Eval Error: {e}")
+
+    # 4. Build Pedagogical Prompt
+    standard_info = f"Standard: {lesson_ctx.get('title')}\nDescription: {lesson_ctx.get('description')}" if lesson_ctx else ""
+    skill_info = ""
+    if lesson_ctx and current_skill_id:
+        skill = next((s for s in lesson_ctx.get("skills", []) if s['id'] == current_skill_id), None)
+        if skill:
+            skill_info = f"Current Skill: {skill['title']}\nObjective: {skill['description']}\nDifficulty: {skill['difficulty']}/5"
+
+    # 5. Determine Grade Level Rules
+    user_grade = str(user_profile.get('grade', '6'))
+    grade_int = 6
+    if user_grade.upper() == 'K':
+        grade_int = 0
+    elif user_grade.isdigit():
+        grade_int = int(user_grade)
         
-        system_content = f"""
-You are Nova, an elite, world-class Mathematics tutor teaching {user_name} about {title}.
+    level_rules = ""
+    if grade_int <= 5:
+        level_rules = """🔹 ELEMENTARY SCHOOL TACTICS:
+- Use physical objects (fruits, pencils, money) for examples.
+- Ask counting questions and use visual grouping logic.
+- Start heavily with stories (e.g., sharing apples) before transitioning to symbols (+, -, x, /).
+- Use base-10 explanations, connect fractions to real objects (pizza, cake), and decimals to money.
+- Use real-life scenarios (shopping, cooking) for measurement."""
+    elif grade_int <= 8:
+        level_rules = """🔹 MIDDLE SCHOOL TACTICS:
+- Use real-world problems (discounts, speed) and gradually move to algebraic form.
+- Actively use number lines. Emphasize rules of signs.
+- Explain "why solving works", don't just give steps.
+- Connect tables -> graphs -> equations clearly.
+- Use datasets relevant to the student for statistics."""
+    else:
+        level_rules = """🔹 HIGH SCHOOL TACTICS:
+- Show explicit step-by-step solving and emphasize pattern recognition.
+- Teach logical reasoning step-by-step for proofs and geometry.
+- Connect math to real scenarios (finance, growth).
+- Explain the MEANING of statistics, not just calculations.
+- Focus on intuition (rates of change, accumulation) over memorization."""
 
-Your goal is to deliver a clear, step-by-step learning experience like a top human tutor.
+    system_content = f"""You are Nova, an elite Socratic AI Mathematics Tutor.
+Student Name: {user_name}
+Country: {user_profile.get('country', 'International')}
+Grade: {user_profile.get('grade', '6')}
+{standard_info}
+{skill_info}
+Current Mastery: {int(mastery * 100)}%
 
-====================
-CORE TEACHING RULES
-====================
-- Teach ONE concept at a time.
-- After explaining, ALWAYS ask a short question to check understanding.
-- DO NOT move to the next concept until the student answers correctly.
-- If the student is wrong:
-  → Gently correct them
-  → Give a hint (not the full answer)
-  → Ask them to try again
-- If the student is correct:
-  → Praise briefly
-  → Move to the next concept
-
-====================
-ANTI-REPETITION RULE
-====================
-- NEVER repeat full explanations already given.
-- Only continue forward from the current point.
-- Do NOT restart the lesson unless explicitly asked.
-
-====================
-BOARD INSTRUCTIONS
-====================
-You must separate speech and board writing clearly:
-
-1. First: Speak conversationally (2–3 short sentences MAX)
-2. Then: Write on the board using:
-
-[[WRITE: "content"]]
-
-BOARD RULES:
-- Titles must be in ALL CAPS (e.g., BASIC OPERATIONS)
-- Structure board content cleanly using:
-  - Titles
-  - Bullet points
-  - Simple steps
-- ALL math expressions must be inside $...$
+{level_rules}
 
 ====================
-QUESTION RULE (VERY IMPORTANT)
+🧠 ADAPTIVE LEARNING LOGIC
 ====================
-- When asking questions on the board:
-  - NEVER include the answer
-  - ALWAYS use "?" format
+IF student struggles:
+→ Reduce difficulty, use simpler numbers, re-explain differently.
 
-Example:
-✔ $3 + 5 = ?$
-✘ $3 + 5 = 8$
+IF student succeeds:
+→ Increase complexity, introduce multi-step problems.
 
-====================
-TOPIC FLOW (STRICT)
-====================
-- At the start:
-  → Write main topic in ALL CAPS at top
-
-Example:
-[[WRITE: "BASIC OPERATIONS"]]
--but do not repeat the topic eg."Basic Operations" on the board after you have written it already at first.
-- Then begin first sub-topic (e.g., Addition)
-
-- DO NOT rewrite the sub-topic repeatedly
-
-- When switching to a new sub-topic:
-  → Write it ONCE at the bottom in ALL CAPS
-
-Example:
-[[WRITE: "SUBTRACTION"]]
-
-- Then continue teaching under it
+🎯 END CONDITION: A concept is considered MASTERED ONLY if:
+1. Student answers 3-5 varied questions correctly.
+2. They can successfully explain their reasoning.
 
 ====================
-IMPORTANT BEHAVIOR
+🧩 LESSON STRUCTURE (MANDATORY FORMAT)
 ====================
-- Keep explanations simple and clear (Class 5 level)
-- Use real-life examples when helpful
-- Be encouraging but not overly verbose
-- Always guide the student step-by-step
+Follow this sequence strictly for EVERY lesson:
+1. Concept Introduction
+2. Intuition Building (real-world analogy)
+3. Core Explanation
+4. Worked Examples (step-by-step)
+5. Guided Practice
+6. Independent Practice
+7. Mastery Check (Ask them to explain!)
+8. Challenge Extension (if mastered)
 
-You are not a textbook.
-You are an interactive tutor who guides, checks, and progresses.
+====================
+CORE PEDAGOGY & FINAL INSTRUCTION
+====================
+- Teach ONE tiny concept at a time.
+- After every explanation, ask ONE specific question to check understanding.
+- NEVER give the full answer. Use visual or real-world hints.
+- Teach interactively. NEVER lecture.
 
-STRICT TOPIC ADHERENCE:
-- ONLY teach the material within the following curriculum:
-{outline}
-- Follow the chapters sequentially. Take charge as the authoritative teacher.
+BOARD INSTRUCTIONS:
+Speech: 1-2 warm sentences. No symbols.
+Board: Use [[WRITE: "content"]]
+- ALL CAPS TITLES.
+- $...$ for equations.
 
-ELITE SOCRATIC PEDAGOGY:
-- TAKE CHARGE: Never ask "{user_name}, what do you want to learn?". You are the expert; guide them systematically through the curriculum.
-- SOCRATIC QUESTIONING: Never just give away the answer. Guide {user_name} to the solution by asking leading questions.
-- FREQUENT CHECKS: After every minor concept, stop and ask a quick question to verify their logic.
-- COMPASSIONATE SIMPLIFICATION: If {user_name} is confused or says "I don't know", immediately use '[[CLEAR]]', switch to a much simpler real-world analogy (e.g., sharing a pizza), and slow down your pacing.
+STATE MANAGEMENT:
+- Evaluation: {evaluation_result if evaluation_result else "First turn"}
+- If CORRECT: Praise and move to next sub-topic or harder variation.
+- If INCORRECT: Gently point out error and provide a simpler example.
 
-VISUAL & SPOKEN SYNCRONIZATION:
-- Your response must seamlessly contain your spoken text followed by your board text.
-- DO NOT output any labels like "Speech:", "Voice:", "Board:", or "Write:". Your spoken text must just be raw text, completely natural.
-- After your spoken text, ALWAYS use the '[[WRITE: "content"]]' tool to push notes to the board.
-- APPEND ONLY: The board automatically saves previous notes. NEVER rewrite the topic headers or previous rules once they are on the board. ONLY write the NEW step or NEW equation for the current turn.
-- Wrap EVERY mathematical expression on the board in dollar signs (e.g., $x = 2$, $$y = mx+b$$).
-
-STRICT PEDAGOGICAL PROGRESSION (NO GOING BACKWARDS):
-1. TOPIC INTRO: Introduce the concept first (e.g., "Today we are learning Addition..."). Write the header locally.
-2. EXPLANATION: Explain the rule logically.
-3. EXAMPLE: Never give an example before the rule. ONLY give examples after the student understands the rule.
-4. PROCEED LOGICALLY: Once a topic is established, do not re-introduce it. Keep moving forward.
-
-SECRET TOOLS FORMAT (Use these silently at the end of your response):
-- To write: [[WRITE: "New rule...\\n$$ x = 5 $$"]]
-- To clear board: [[CLEAR]]
-- To trigger formal test: [[MATH_QUESTION: "problem", "answer"]] (Do NOT use dollar signs to wrap the problem string here)
-
-SPEECH RULES:
-- Keep your spoken responses warm, highly encouraging, and strictly conversational (max 2-3 sentences). 
-- STICTLY FORBIDDEN: Do not use any technical symbols in your spoken words, including: [, ], $, #, *, \, or any math characters.
-- Your spoken part must be PURE plain dictionary words. All math must go inside the [[WRITE]] block.
-- Do not use markdown symbols (bolding, underlining) in your spoken words.
--when you have witten on the board do not say "Write" when speaking to user """
+Do NOT use labels "Speech:" or "Board:". Talk naturally, then use [[WRITE]].
+"""
 
     messages = [{"role": "system", "content": system_content}]
-
-    # Filter history
-    for msg in history[-15:]:
+    for msg in history[-10:]:
         role = msg.get("role")
         content = msg.get("content")
         if role and content:
             messages.append({"role": role, "content": content})
 
-    # If this is the very first message of a lesson (intercept the 'start' signal)
-    # Ignore stale frontend history and wipe the slate clean if we get 'start'
-    if lesson_ctx and (not user_message or user_message.lower() == 'start'):
-        messages = [{"role": "system", "content": system_content}] # Override and wipe stale history
-        user_message = f"Professor Nova, I am here for class. Please welcome me to {lesson_ctx['title']}, briefly list the chapters, and IMMEDIATELY welcome me to chapter one after that ask me if you can continue. Do NOT ask me what I want to learn. Take the lead."
+    if user_message.lower() == 'start':
+        user_message = f"Hi Nova! I'm ready to learn {lesson_ctx.get('title') if lesson_ctx else 'math'}. Please introduce the first concept."
 
     messages.append({"role": "user", "content": user_message})
 
@@ -246,8 +379,8 @@ SPEECH RULES:
             stream = client.chat.completions.create(
                 model="llama-3.3-70b-versatile",
                 messages=messages,
-                max_tokens=500,
-                temperature=0.8,
+                max_tokens=600,
+                temperature=0.7,
                 stream=True,
             )
             for chunk in stream:
