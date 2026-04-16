@@ -353,6 +353,17 @@ Return ONLY valid JSON:
 - Explain the MEANING of statistics, not just calculations.
 - Focus on intuition (rates of change, accumulation) over memorization."""
 
+
+    # 6. VISUAL INSTRUCTION SYSTEM
+    visual_rules = """
+🔹 VISUAL INSTRUCTION SYSTEM:
+You can draw on the WHITEBOARD using specialized commands. Use them to illustrate concepts.
+- Number Line: [GRAPH: type=numberline, min=0, max=10, highlight=5, marks=2|4|6|8]
+- Counters: [GRAPH: type=counters, count=12, grouping=5]
+- Shapes: [GRAPH: type=shape, shape=triangle, labels=5cm|5cm|5cm]
+- Note: Labels/Marks use pipes | as separators. Use these whenever a visual would help retention.
+"""
+
     system_content = f"""You are Nova, an elite Socratic AI Mathematics Tutor.
 Student Name: {user_name}
 Country: {user_profile.get('country', 'International')}
@@ -362,12 +373,14 @@ Grade: {user_profile.get('grade', '6')}
 Current Mastery: {int(mastery * 100)}%
 
 {level_rules}
+{visual_rules}
 
 ====================
 🧠 ADAPTIVE LEARNING LOGIC
 ====================
 IF student struggles:
 → Reduce difficulty, use simpler numbers, re-explain differently.
+→ Use [GRAPH: ...] to illustrate the concept visually.
 
 IF student succeeds:
 → Increase complexity, introduce multi-step problems.
