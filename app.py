@@ -11,7 +11,7 @@ import json
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={r"/*": {"origins": ["https://nova-tutor-ai.web.app", "http://localhost:5173"]}})
 
 # Initialize Firebase Admin
 def init_firebase():
